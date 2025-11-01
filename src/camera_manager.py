@@ -16,17 +16,24 @@ class CameraManager:
         self.error_handler = error_handler
         self.camera_thread = None
         self.running = threading.Event()
+        self.is_ready = threading.Event() # (MỚI) Signal cho biết camera đã mở thành công
 
     def start(self):
-        """Khởi tạo và chạy luồng camera."""
+        """Khởi tạo và chạy luồng camera (có timeout)."""
         if self.camera_thread and self.camera_thread.is_alive():
             logging.info("[CAMERA] Camera đã chạy.")
             return
-
+        
+        self.is_ready.clear()
         self.running.set()
         self.camera_thread = threading.Thread(target=self._run_camera_loop, name="CameraThread", daemon=True)
         self.camera_thread.start()
         logging.info("[CAMERA] Đã khởi động luồng camera.")
+        
+        # (MỚI) Chờ camera sẵn sàng hoặc timeout 5 giây
+        if not self.is_ready.wait(timeout=5):
+            self.running.clear()
+            raise RuntimeError("Khởi động Camera Timeout (Chưa nhận được tín hiệu sẵn sàng sau 5s).")
 
     def stop(self):
         """Dừng luồng camera an toàn."""
@@ -47,6 +54,7 @@ class CameraManager:
             if self.camera is None or not self.camera.isOpened():
                 if retries >= max_retries:
                     self.error_handler.trigger_maintenance("Camera lỗi vĩnh viễn (mất kết nối).")
+                    self.is_ready.clear() # Đánh dấu không sẵn sàng
                     break
                     
                 logging.warning(f"[CAMERA] Đang thử kết nối lại camera (Lần {retries + 1})...")
@@ -61,6 +69,10 @@ class CameraManager:
                 self._release_camera()
                 time.sleep(0.5)
                 continue
+
+            # (MỚI) Nếu camera đã mở và đọc thành công lần đầu, đánh dấu sẵn sàng
+            if not self.is_ready.is_set():
+                self.is_ready.set()
 
             retries = 0 # Reset khi thành công
             with self.frame_lock:
@@ -79,6 +91,7 @@ class CameraManager:
             
             if not self.camera.isOpened():
                 logging.error("[CAMERA] Không thể mở camera.")
+                self.is_ready.clear()
                 return
 
             # Cài đặt tối ưu (từ v5.4)
@@ -92,9 +105,12 @@ class CameraManager:
             self.camera.set(cv2.CAP_PROP_GAIN, 8)              
             
             logging.info("[CAMERA] Camera sẵn sàng với cấu hình tối ưu.")
+            # Không set ready ở đây, chờ frame đầu tiên thành công trong loop
+
         except Exception as e:
             logging.error(f"[CAMERA] Lỗi cấu hình camera: {e}")
             self._release_camera()
+            self.is_ready.clear()
 
 
     def _release_camera(self):

@@ -117,33 +117,48 @@ class SortingSystem:
 
     # --- 2. Khởi động Hệ thống ---
     def start(self):
-        logging.info("--- HỆ THỐNG ĐANG KHỞI ĐỘNG (Modular Hybrid) ---")
-        self.main_running.set()
+        try:
+            logging.info("--- HỆ THỐNG ĐANG KHỞI ĐỘNG (Modular Hybrid) ---")
+            self.main_running.set()
 
-        # 1. Tải cấu hình và Setup GPIO
-        lanes_cfg, timing_cfg = self.config_manager.load_config()
-        self.gpio_handler.setup_pins(lanes_cfg, timing_cfg)
-        self._initialize_sensor_states()
-        
-        # 2. Khởi động các luồng nền
-        self.camera_manager.start()
-        threading.Thread(target=self.ws_manager.broadcast_state_thread, name="StateBcast", daemon=True, args=(self.state_manager, self.error_handler)).start()
-        threading.Thread(target=self.config_manager.periodic_save_thread, name="ConfigSave", daemon=True).start()
-        
-        # 3. Khởi động luồng Logic
-        threading.Thread(target=self._qr_detection_loop, name="QRScannerLogic", daemon=True).start()
-        threading.Thread(target=self._sensor_monitoring_thread, name="SensorMon", daemon=True).start()
-        
-        self._print_startup_log()         
-        
-        # 4. Chạy Web Server
-        host = '0.0.0.0'; port = 3000
-        if WAITRESS_AVAILABLE:
-            logging.info(f"✅ SERVER MODE: Waitress (Production). Listening on http://{host}:{port}")
-            serve(self.app, host=host, port=port, threads=8, connection_limit=200)
-        else:
-            logging.warning("⚠️ KHÔNG tìm thấy Waitress. Dùng Flask dev server (TẠM THỜI).")
-            self.app.run(host=host, port=port, debug=False)
+            # Khởi tạo cấu hình và GPIO
+            try:
+                lanes_cfg, timing_cfg = self.config_manager.load_config()
+                self.gpio_handler.setup_pins(lanes_cfg, timing_cfg)
+                self._initialize_sensor_states()
+            except Exception as e:
+                logging.error(f"[STARTUP] Lỗi cấu hình/GPIO: {e}", exc_info=True)
+                raise RuntimeError("Khởi tạo cấu hình/GPIO thất bại.") from e
+
+            # 2. Khởi động các luồng nền (Bao gồm Camera)
+            self.camera_manager.start()
+            threading.Thread(target=self.ws_manager.broadcast_state_thread, name="StateBcast", daemon=True, args=(self.state_manager, self.error_handler)).start()
+            threading.Thread(target=self.config_manager.periodic_save_thread, name="ConfigSave", daemon=True).start()
+            
+            # 3. Khởi động luồng Logic
+            threading.Thread(target=self._qr_detection_loop, name="QRScannerLogic", daemon=True).start()
+            threading.Thread(target=self._sensor_monitoring_thread, name="SensorMon", daemon=True).start()
+            
+            self._print_startup_log()         
+            
+            # 4. Chạy Web Server
+            host = '0.0.0.0'; port = 3000
+            try:
+                if WAITRESS_AVAILABLE:
+                    logging.info(f"✅ SERVER MODE: Waitress (Production). Listening on http://{host}:{port}")
+                    serve(self.app, host=host, port=port, threads=8, connection_limit=200)
+                else:
+                    logging.warning("⚠️ KHÔNG tìm thấy Waitress. Dùng Flask dev server (TẠM THỜI).")
+                    self.app.run(host=host, port=port, debug=False)
+            except Exception as e:
+                # Bắt lỗi nếu port bị chiếm, v.v.
+                logging.critical(f"[STARTUP] Lỗi khởi động Web Server: {e}", exc_info=True)
+                raise RuntimeError("Khởi động Web Server thất bại.") from e
+            
+        except RuntimeError:
+            # Bắt lỗi khởi tạo và đảm bảo dọn dẹp được gọi qua khối finally bên ngoài
+            self.stop()
+            raise
 
     def stop(self):
         # (ĐÃ SỬA) Phát tín hiệu dừng và thêm độ trễ để các luồng kịp thoát
