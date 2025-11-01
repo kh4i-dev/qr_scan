@@ -35,7 +35,8 @@ for extra_path in (PROJECT_ROOT, SRC_DIR, PARENT_DIR):
 
 
 # --- Import Modules ---
-from src.constants import PASSWORD, PIN_ENTRY, ACTIVE_LOW
+# Đảm bảo tất cả import đều dùng tiền tố 'src.' do cấu trúc thư mục
+from src.constants import USERNAME, PASSWORD, PIN_ENTRY, ACTIVE_LOW, AUTH_ENABLED
 from src.error_handler import ErrorHandler
 from src.gpio_handler import GPIOHandler, get_gpio_provider
 from src.system_state import SystemState
@@ -45,7 +46,7 @@ from src.camera_manager import CameraManager
 from src.qr_scanner import QRScanner
 from src.websocket_manager import WebSocketManager
 from src.api_routes import APIRouter
-from src.test_workers import run_test_relay_worker, run_test_all_relays_worker # (MỚI) Import Worker Test
+from src.test_workers import run_test_relay_worker, run_test_all_relays_worker # Import Worker Test
 from src.utils import canon_id # Dùng cho logic Mapping
 
 # --- Cấu hình Logging (tối thiểu) ---
@@ -134,6 +135,7 @@ class SortingSystem:
         threading.Thread(target=self._sensor_monitoring_thread, name="SensorMon", daemon=True).start()
         
         self._print_startup_log()         
+        
         # 4. Chạy Web Server
         host = '0.0.0.0'; port = 3000
         if WAITRESS_AVAILABLE:
@@ -144,7 +146,10 @@ class SortingSystem:
             self.app.run(host=host, port=port, debug=False)
 
     def stop(self):
+        # (ĐÃ SỬA) Phát tín hiệu dừng và thêm độ trễ để các luồng kịp thoát
         self.main_running.clear()
+        time.sleep(0.5) 
+
         self.camera_manager.stop()
         self.executor.shutdown(wait=False)
         self.gpio_handler.cleanup()
@@ -155,18 +160,18 @@ class SortingSystem:
         self.last_s_state = [1] * num_lanes
         self.last_s_trig = [0.0] * num_lanes
         self.last_entry_trigger_time = 0.0
+
+    # (MỚI) Phương thức in log chi tiết khi khởi động
     def _print_startup_log(self):
         """In log trạng thái chi tiết khi khởi động thành công."""
-        # Import lại các hằng số cần thiết (đã có ở đầu file main.py)
-        from src.constants import USERNAME, PASSWORD, AUTH_ENABLED
+        # Lấy các hằng số từ global scope của main.py (đã được import)
+        global USERNAME, PASSWORD, AUTH_ENABLED, WAITRESS_AVAILABLE
         
         # Dữ liệu từ instance của SortingSystem
         is_real_gpio = not self.gpio_handler.is_mock()
         gpio_mode = self.state_manager.state['timing_config'].get("gpio_mode", "BCM")
         
-        # Xác định WAITRESS_AVAILABLE (đã có ở đầu file main.py)
-        # SỬA DỤNG biến global WAITRESS_AVAILABLE từ scope ngoài
-        WAITRESS_STATUS = "Waitress (Production)" if locals().get('WAITRESS_AVAILABLE') else "Flask Dev (TẠM THỜI)"
+        WAITRESS_STATUS = "Waitress (Production)" if WAITRESS_AVAILABLE else "Flask Dev (TẠM THỜI)"
 
         logging.info("="*55)
         logging.info("  HỆ THỐNG PHÂN LOẠI SẴN SÀNG (Modular Hybrid / Gated FIFO)")
@@ -179,7 +184,8 @@ class SortingSystem:
             logging.info(f"  Truy cập: http://<IP_CUA_PI>:3000 (User: {USERNAME} / Pass: {PASSWORD})")
         else:
             logging.info("  Truy cập: http://<IP_CUA_PI>:3000 (KHÔNG yêu cầu đăng nhập)")
-        logging.info("="*55)    
+        logging.info("="*55)
+        
 
     # =========================================================================
     #             LOGIC HỆ THỐNG (THREADS)
@@ -438,6 +444,7 @@ class SortingSystem:
                 self.ws_manager.broadcast_log({"log_type": "info", "message": msg})
             else:
                 self.state_manager.update_lane_status(lane_index, {"status": "Lỗi/Sẵn sàng"})
+
 if __name__ == "__main__":
     app_system = None 
 
@@ -455,16 +462,14 @@ if __name__ == "__main__":
         logging.info("\n🛑 Dừng hệ thống (Ctrl+C)...")
         
     except Exception as main_e:
+        # Lỗi khởi động nghiêm trọng, cần log và dọn dẹp
         logging.critical(f"[CRITICAL] Lỗi khởi động hệ thống: {main_e}", exc_info=True)
 
     finally:
         # Khối dọn dẹp (chức năng cleanup của phiên bản cũ)
         if app_system is not None:
-            # Phương thức stop() đảm nhiệm việc:
-            # - Dừng luồng chính
-            # - Tắt ThreadPoolExecutor
-            # - Gọi gpio_handler.cleanup() (tương đương GPIO.cleanup())
-            app_system.stop()
+            # Phương thức stop() đã được sửa để có time.sleep(0.5) bên trong, giúp các luồng thoát sạch sẽ
+            app_system.stop() 
             logging.info("✅ Cleanup hoàn tất. Tạm biệt!")
         else:
             logging.info("👋 Tạm biệt! (Hệ thống chưa kịp khởi tạo hoàn chỉnh)")

@@ -53,6 +53,7 @@ class ConfigManager:
                     self.error_handler.trigger_maintenance(f"Lỗi file {CONFIG_FILE}: {e}")
             else:
                 logging.warning(f"[CONFIG] Không tìm thấy {CONFIG_FILE}, tạo file mới với cấu hình mặc định.")
+                # Nếu không thể lưu, save_config sẽ trả về False, nhưng hệ thống vẫn tiếp tục
                 self.save_config(loaded_cfg)
 
         # Cập nhật trạng thái trung tâm
@@ -75,7 +76,8 @@ class ConfigManager:
                 os.replace(tmp_file, filepath)
                 return True
             except Exception as e:
-                logging.error(f"[SAVE] Lỗi atomic save file {filepath}: {e}")
+                # (ĐÃ SỬA) Báo cáo lỗi chi tiết khi ghi file
+                logging.error(f"[SAVE] Lỗi atomic save file {filepath}: {e}", exc_info=True) 
                 if os.path.exists(tmp_file):
                     try: os.remove(tmp_file)
                     except Exception: pass
