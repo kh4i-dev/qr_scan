@@ -3,7 +3,7 @@
 import json
 import os
 import logging
-from threading import Lock
+from threading import Lock, RLock # (SỬA) Import RLock
 from .constants import CONFIG_FILE, SORT_LOG_FILE, DEFAULT_LANES_CFG, DEFAULT_TIMING_CFG
 from .system_state import SystemState
 
@@ -12,8 +12,9 @@ class ConfigManager:
         self.state = state_manager
         self.error_handler = error_handler
         self.ws_manager = ws_manager
-        self.config_file_lock = Lock()
-        self.sort_log_lock = Lock()
+        # (SỬA) Dùng RLock để tránh Deadlock khi load_config gọi save_config
+        self.config_file_lock = RLock() 
+        self.sort_log_lock = RLock() # Dùng RLock cho nhất quán
 
     def _ensure_lane_ids(self, lanes_list):
         """Đảm bảo mỗi lane có một ID cố định."""
@@ -32,7 +33,7 @@ class ConfigManager:
             "lanes_config": [l.copy() for l in DEFAULT_LANES_CFG],
         }
 
-        with self.config_file_lock:
+        with self.config_file_lock: # <--- Bây giờ an toàn
             if os.path.exists(CONFIG_FILE):
                 try:
                     with open(CONFIG_FILE, 'r', encoding='utf-8') as f: content = f.read()
@@ -53,8 +54,7 @@ class ConfigManager:
                     self.error_handler.trigger_maintenance(f"Lỗi file {CONFIG_FILE}: {e}")
             else:
                 logging.warning(f"[CONFIG] Không tìm thấy {CONFIG_FILE}, tạo file mới với cấu hình mặc định.")
-                # Nếu không thể lưu, save_config sẽ trả về False, nhưng hệ thống vẫn tiếp tục
-                self.save_config(loaded_cfg)
+                self.save_config(loaded_cfg) # <--- Lệnh gọi này giờ đã an toàn
 
         # Cập nhật trạng thái trung tâm
         with self.state.state_lock:
@@ -68,7 +68,7 @@ class ConfigManager:
 
     def atomic_save_json(self, data, filepath, lock):
         """Ghi file JSON một cách an toàn (atomic write)."""
-        with lock:
+        with lock: # <--- Bây giờ an toàn
             tmp_file = f"{filepath}.tmp"
             try:
                 with open(tmp_file, 'w', encoding='utf-8') as f:
@@ -76,8 +76,8 @@ class ConfigManager:
                 os.replace(tmp_file, filepath)
                 return True
             except Exception as e:
-                # (ĐÃ SỬA) Báo cáo lỗi chi tiết khi ghi file
-                logging.error(f"[SAVE] Lỗi atomic save file {filepath}: {e}", exc_info=True) 
+                # (SỬA) Thêm exc_info=True để gỡ lỗi quyền truy cập
+                logging.error(f"[SAVE] Lỗi atomic save file {filepath}: {e}", exc_info=True)
                 if os.path.exists(tmp_file):
                     try: os.remove(tmp_file)
                     except Exception: pass
@@ -127,3 +127,4 @@ class ConfigManager:
 
             except Exception as e:
                 logging.error(f"[SAVE] Lỗi khi tự động lưu state: {e}")
+

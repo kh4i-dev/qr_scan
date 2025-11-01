@@ -20,8 +20,9 @@ class QueueManager:
             self.qr_queue.append(item)
             self._update_state_indices()
     
+    # (MỚI) Thêm hàm này để xử lý false trigger
     def add_qr_item_at_head(self, item):
-        """(MỚI) Thêm item QR trở lại vào ĐẦU hàng chờ (dùng khi false trigger)."""
+        """Thêm item QR trở lại vào ĐẦU hàng chờ (dùng khi false trigger)."""
         with self.qr_queue_lock:
             self.qr_queue.insert(0, item)
             self._update_state_indices()
