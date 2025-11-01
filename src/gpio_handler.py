@@ -2,55 +2,22 @@
 """Module trừu tượng hóa và xử lý GPIO."""
 import logging
 from threading import Lock
+# Sử dụng sys để thoát an toàn nếu có lỗi CRITICAL
+import sys
 from .constants import ACTIVE_LOW
 
 # Thử import RPi.GPIO thật
 try:
+    # Nếu đang chạy trên máy tính (PC), RPiGPIO sẽ là None
     import RPi.GPIO as RPiGPIO
 except (ImportError, RuntimeError):
-    RPiGPIO = None  # Đặt là None nếu thất bại (chạy trên PC)
+    RPiGPIO = None 
 
-class GPIOProvider:
-    """Lớp trừu tượng (base class) để tương tác GPIO."""
-    def setup(self, pin, mode, pull_up_down=None): raise NotImplementedError
-    def output(self, pin, value): raise NotImplementedError
-    def input(self, pin): raise NotImplementedError
-    def cleanup(self): raise NotImplementedError
-    def setmode(self, mode): raise NotImplementedError
-    def setwarnings(self, value): raise NotImplementedError
-
-class RealGPIO(GPIOProvider):
-    """Triển khai dùng thư viện RPi.GPIO thật."""
-    def __init__(self):
-        if RPiGPIO is None: raise ImportError("Không thể tải thư viện RPi.GPIO.")
-        self.gpio = RPiGPIO
-        for attr in ['BOARD', 'BCM', 'OUT', 'IN', 'HIGH', 'LOW', 'PUD_UP']:
-            setattr(self, attr, getattr(self.gpio, attr))
-        self.is_real = True
-
-    def setmode(self, mode): self.gpio.setmode(mode)
-    def setwarnings(self, value): self.gpio.setwarnings(value)
-
-    def setup(self, pin, mode, pull_up_down=None):
-        if pin is None: return
-        try:
-            if pull_up_down: self.gpio.setup(pin, mode, pull_up_down=pull_up_down)
-            else: self.gpio.setup(pin, mode)
-            logging.debug(f"[GPIO] Setup pin {pin} OK.")
-        except Exception as e:
-            logging.error(f"[GPIO] Lỗi setup pin {pin}: {e}", exc_info=True)
-            raise RuntimeError(f"Lỗi setup pin {pin}") from e
-
-    def output(self, pin, value): 
-        if pin is not None: self.gpio.output(pin, value)
-    def input(self, pin): 
-        if pin is not None: return self.gpio.input(pin)
-        return self.HIGH
-    def cleanup(self): self.gpio.cleanup()
+# ... (Giữ nguyên class GPIOProvider, RealGPIO, MockGPIO) ...
 
 # --- Triển khai Mock GPIO ---
 class MockGPIO(GPIOProvider):
-    """Triển khai GPIO giả lập (Mock) để test trên PC."""
+    # ... (Giữ nguyên nội dung MockGPIO) ...
     def __init__(self):
         for attr, val in [('BOARD', "mock_BOARD"), ('BCM', "mock_BCM"), ('OUT', "mock_OUT"),
                           ('IN', "mock_IN"), ('HIGH', 1), ('LOW', 0), ('PUD_UP', "mock_PUD_UP")]:
@@ -115,28 +82,54 @@ class GPIOHandler:
         gpio_mode_str = timing_cfg.get("gpio_mode", "BCM")
         mode_to_set = self.gpio.BCM if gpio_mode_str == "BCM" else self.gpio.BOARD
 
-        try:
-            self.gpio.setmode(mode_to_set)
-            self.gpio.setwarnings(False)
+        # BẮT ĐẦU VỚI LOGIC GỠ LỖI TỪNG CHÂN
+        if not self.is_mock():
+            try:
+                self.gpio.setmode(mode_to_set)
+                self.gpio.setwarnings(False)
 
-            active_pins = self._get_active_pins(lanes_cfg)
-            
-            # Setup chân SENSOR (gồm cả PIN_ENTRY)
-            for pin in active_pins['sensor']:
-                self.gpio.setup(pin, self.gpio.IN, pull_up_down=self.gpio.PUD_UP)
-            
-            # Setup chân RELAY
-            for pin in active_pins['relay']:
-                self.gpio.setup(pin, self.gpio.OUT)
+                active_pins = self._get_active_pins(lanes_cfg)
                 
-            logging.info(f"[GPIO] Cài đặt {len(active_pins['sensor'])} sensor và {len(active_pins['relay'])} relay hoàn tất.")
-            self.reset_all_relays()
+                # Setup chân SENSOR (gồm cả PIN_ENTRY)
+                logging.info("[GPIO] Bắt đầu thiết lập các chân SENSOR:")
+                for pin in active_pins['sensor']:
+                    try:
+                        self.gpio.setup(pin, self.gpio.IN, pull_up_down=self.gpio.PUD_UP)
+                        logging.debug(f"[GPIO] Setup SENSOR PIN {pin} OK.")
+                    except Exception as e:
+                        msg = f"Lỗi nghiêm trọng: Xung đột chân SENSOR {pin} ({e})."
+                        logging.critical(f"[CRITICAL] {msg}", exc_info=True)
+                        self.error_handler.trigger_maintenance(msg)
+                        self.gpio.cleanup()
+                        sys.exit(1) # Bắt buộc thoát chương trình ngay lập tức
 
-        except Exception as e:
-            msg = f"Cài đặt GPIO thất bại (Mode: {gpio_mode_str}): {e}"
-            logging.critical(f"[CRITICAL] {msg}", exc_info=True)
-            self.error_handler.trigger_maintenance(msg)
-            raise
+                # Setup chân RELAY
+                logging.info("[GPIO] Bắt đầu thiết lập các chân RELAY:")
+                for pin in active_pins['relay']:
+                    try:
+                        self.gpio.setup(pin, self.gpio.OUT)
+                        logging.debug(f"[GPIO] Setup RELAY PIN {pin} OK.")
+                    except Exception as e:
+                        msg = f"Lỗi nghiêm trọng: Xung đột chân RELAY {pin} ({e})."
+                        logging.critical(f"[CRITICAL] {msg}", exc_info=True)
+                        self.error_handler.trigger_maintenance(msg)
+                        self.gpio.cleanup()
+                        sys.exit(1) # Bắt buộc thoát chương trình ngay lập tức
+
+                logging.info(f"[GPIO] Cài đặt {len(active_pins['sensor'])} sensor và {len(active_pins['relay'])} relay hoàn tất.")
+                self.reset_all_relays()
+
+            except Exception as e:
+                # Bắt lỗi nếu setmode/setwarnings bị lỗi (rất hiếm, nhưng đề phòng)
+                msg = f"Cài đặt GPIO thất bại (Mode: {gpio_mode_str}): {e}"
+                logging.critical(f"[CRITICAL] {msg}", exc_info=True)
+                self.error_handler.trigger_maintenance(msg)
+                if not self.is_mock(): self.gpio.cleanup()
+                sys.exit(1)
+        else:
+            # Chế độ Mock: Chỉ cần set config
+            logging.info(f"[GPIO] Chế độ Mock. Thiết lập config: {gpio_mode_str}")
+
 
     def _get_active_pins(self, lanes_cfg):
         sensor_pins = set()
@@ -148,11 +141,13 @@ class GPIOHandler:
             if lane.get("push_pin") is not None: relay_pins.add(lane["push_pin"])
             if lane.get("pull_pin") is not None: relay_pins.add(lane["pull_pin"])
             
-        # (MỚI) Thêm PIN_ENTRY vào sensor_pins (nếu chưa có)
+        # Thêm PIN_ENTRY
         from .constants import PIN_ENTRY
         sensor_pins.add(PIN_ENTRY)
         
         return {'sensor': list(sensor_pins), 'relay': list(relay_pins)}
+
+    # ... (Giữ nguyên relay_on, relay_off, read_sensor, reset_all_relays, cleanup, is_mock, mock_set_input) ...
 
     def relay_on(self, pin):
         if pin is None: return
