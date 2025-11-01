@@ -64,24 +64,28 @@ class SortingSystem:
         # 1. Khởi tạo Modules (Tạo đối tượng)
         self.ws_manager = WebSocketManager()
         self.error_handler = ErrorHandler(self.ws_manager)
+        
+        # (SỬA) Khởi tạo self.main_running TRƯỚC khi dùng
+        self.main_running = threading.Event()
+        
         self.gpio_handler = GPIOHandler(self.error_handler)
         self.state_manager = SystemState(self.gpio_handler.is_mock())
-        self.config_manager = ConfigManager(self.state_manager, self.error_handler, self.ws_manager)
-        self.queue_manager = QueueManager(self.state_manager) # (SỬA) Sử dụng QueueManager mới
-        self.camera_manager = CameraManager(self.error_handler)
-        self.qr_scanner = QRScanner() # Model YOLO được tải bên trong
+        
+        # (SỬA) Truyền main_running vào ConfigManager và CameraManager
+        self.config_manager = ConfigManager(self.state_manager, self.error_handler, self.ws_manager, self.main_running)
+        self.queue_manager = QueueManager(self.state_manager) 
+        self.camera_manager = CameraManager(self.error_handler, self.main_running)
+        
+        self.qr_scanner = QRScanner() 
 
         # 2. Các biến Runtime & Threading
         self.executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="Worker")
-        self.main_running = threading.Event()
+        # self.main_running = threading.Event() # (SỬA) Đã chuyển lên trên
         
         # Biến trạng thái sensor (dùng trong Sensor Monitoring Thread)
         self.last_s_state, self.last_s_trig = [], []
         self.last_entry_trigger_time = 0.0
         self.auto_test_enabled = False
-        
-        # (SỬA) Xóa bỏ 'pending_sensor_triggers' vì Gated FIFO không cần nó
-        # self.pending_sensor_triggers = {} 
         
         # 3. Cấu hình Flask
         self.app = Flask(__name__)
@@ -124,23 +128,32 @@ class SortingSystem:
             logging.info("--- HỆ THỐNG ĐANG KHỞI ĐỘNG (Modular Gated FIFO) ---")
             self.main_running.set()
 
-            # 1. Tải cấu hình và Setup GPIO
+            # 1. Tải cấu hình và Setup GPIO (Giai đoạn dễ bị treo)
+            logging.info("[START] Đang tải cấu hình...")
             lanes_cfg, timing_cfg = self.config_manager.load_config()
+            
+            logging.info("[START] Đang thiết lập chân GPIO...")
             self.gpio_handler.setup_pins(lanes_cfg, timing_cfg)
             self._initialize_sensor_states()
             
-            # 2. Khởi động các luồng nền
+            # 2. Khởi động các luồng nền (Camera, WebSocket)
+            logging.info("[START] Đang khởi động Camera và WebSocket...")
             self.camera_manager.start()
             threading.Thread(target=self.ws_manager.broadcast_state_thread, name="StateBcast", daemon=True, args=(self.state_manager, self.error_handler)).start()
-            threading.Thread(target=self.config_manager.periodic_save_thread, name="ConfigSave", daemon=True).start()
             
-            # 3. Khởi động luồng Logic
+            # 3. Khởi động luồng Logic (QR, Sensor)
+            logging.info("[START] Đang khởi động luồng Logic (QR và Sensor)...")
             threading.Thread(target=self._qr_detection_loop, name="QRScannerLogic", daemon=True).start()
             threading.Thread(target=self._sensor_monitoring_thread, name="SensorMon", daemon=True).start()
             
+            # In log báo cáo (sau khi GPIO và Config đã OK)
             self._print_startup_log()         
             
-            # 4. Chạy Web Server
+            # 4. (SỬA) Khởi động luồng ConfigSave CUỐI CÙNG (Tránh Deadlock)
+            logging.info("[START] Đang khởi động luồng lưu tự động...")
+            threading.Thread(target=self.config_manager.periodic_save_thread, name="ConfigSave", daemon=True).start()
+
+            # 5. Chạy Web Server (Blocking)
             host = '0.0.0.0'; port = 3000
             if WAITRESS_AVAILABLE:
                 logging.info(f"✅ SERVER MODE: Waitress (Production). Listening on http://{host}:{port}")
@@ -178,7 +191,6 @@ class SortingSystem:
         self.last_s_state = [1] * num_lanes
         self.last_s_trig = [0.0] * num_lanes
         self.last_entry_trigger_time = 0.0
-        # self.pending_sensor_triggers = {} # Xóa bỏ
 
     def _print_startup_log(self):
         """In log trạng thái chi tiết khi khởi động thành công."""
@@ -281,8 +293,6 @@ class SortingSystem:
                     })
                     self.state_manager.update_lane_status(timeout_item['lane_index'], {"status": "Sẵn sàng"})
 
-                # (XÓA) Logic pending trigger không còn cần thiết
-
                 # 2. (MỚI) ĐỌC SENSOR ĐẦU VÀO (PIN_ENTRY)
                 try:
                     entry_sensor_now = self.gpio_handler.read_sensor(PIN_ENTRY)
@@ -364,8 +374,8 @@ class SortingSystem:
                     self.last_s_state[i] = sensor_now
                 
                 # 4. Cập nhật số token cho UI sau khi quét qua các sensor lane
-                # (dùng index = num_lanes)
-                self.state_manager.update_lane_status(num_lanes, {"count": self.queue_manager.get_entry_queue_length()})
+                # (SỬA) Đổi tên 'count' thành 'entry_token_count' cho rõ ràng
+                self.state_manager.update_lane_status(num_lanes, {"entry_token_count": self.queue_manager.get_entry_queue_length()})
             
             except Exception as loop_e:
                 logging.error(f"[SensorMon] Lỗi không mong muốn trong vòng lặp: {loop_e}", exc_info=True)
@@ -474,8 +484,8 @@ class SortingSystem:
                     self.state_manager.state['lanes'][lane_index]['status'] = "Sẵn sàng"
                 
                 log_type = "sort" if is_sorting_lane else "pass"
-                # (SỬA) Gửi data trong broadcast_log
-                self.ws_manager.broadcast_log({"log_type": log_type, "data": {"name": lane_name, "count": current_count}})
+                # (SỬA) Gửi data trong broadcast_log (ĐÃ SỬA: data.name -> name)
+                self.ws_manager.broadcast_log({"log_type": log_type, "name": lane_name, "count": current_count})
                 
                 msg = f"Hoàn tất chu trình cho {lane_name}" if is_sorting_lane else f"Hoàn tất đếm vật phẩm đi thẳng qua {lane_name}"
                 logging.info(f"[SORT] {msg} (Tổng: {current_count})") # Thêm log server

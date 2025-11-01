@@ -3,7 +3,7 @@
 import logging
 from threading import Lock
 import sys # (SỬA) Thêm sys để dùng sys.exit
-from .constants import ACTIVE_LOW
+from .constants import ACTIVE_LOW, PIN_ENTRY # (SỬA) Import PIN_ENTRY
 
 # Thử import RPi.GPIO thật
 try:
@@ -109,6 +109,7 @@ class GPIOHandler:
         self.lanes_cfg = []
         self.timing_cfg = {}
         
+    # (SỬA) Thêm logic gỡ lỗi GPIO (sys.exit)
     def setup_pins(self, lanes_cfg, timing_cfg):
         self.lanes_cfg = lanes_cfg
         self.timing_cfg = timing_cfg
@@ -135,7 +136,7 @@ class GPIOHandler:
                     self.gpio.setup(pin, self.gpio.IN, pull_up_down=self.gpio.PUD_UP)
                     logging.debug(f"[GPIO] Setup SENSOR Pin {pin} OK.")
                 except Exception as e:
-                    msg = f"Lỗi nghiêm trọng: Xung đột chân SENSOR {pin} ({e})."
+                    msg = f"Lỗi nghiêm trọng: Xung đột chân SENSOR {pin} ({e}). Kiểm tra xem chân này có bị chiếm dụng không."
                     logging.critical(f"[CRITICAL] {msg}", exc_info=True)
                     self.error_handler.trigger_maintenance(msg)
                     self.gpio.cleanup()
@@ -148,7 +149,7 @@ class GPIOHandler:
                     self.gpio.setup(pin, self.gpio.OUT)
                     logging.debug(f"[GPIO] Setup RELAY Pin {pin} OK.")
                 except Exception as e:
-                    msg = f"Lỗi nghiêm trọng: Xung đột chân RELAY {pin} ({e})."
+                    msg = f"Lỗi nghiêm trọng: Xung đột chân RELAY {pin} ({e}). Kiểm tra xem chân này có bị chiếm dụng không."
                     logging.critical(f"[CRITICAL] {msg}", exc_info=True)
                     self.error_handler.trigger_maintenance(msg)
                     self.gpio.cleanup()
@@ -175,8 +176,8 @@ class GPIOHandler:
             if lane.get("push_pin") is not None: relay_pins.add(lane["push_pin"])
             if lane.get("pull_pin") is not None: relay_pins.add(lane["pull_pin"])
             
-        # (MỚI) Thêm PIN_ENTRY vào sensor_pins (nếu chưa có)
-        from .constants import PIN_ENTRY
+        # (SỬA) Thêm PIN_ENTRY vào sensor_pins (nếu chưa có)
+        # from .constants import PIN_ENTRY (Đã import ở đầu)
         sensor_pins.add(PIN_ENTRY)
         
         logging.info(f"[GPIO] Phát hiện {len(sensor_pins)} sensor (bao gồm Gác Cổng) và {len(relay_pins)} relay.")
@@ -239,4 +240,5 @@ class GPIOHandler:
         if self.is_mock():
             return self.gpio.set_input_state(pin, logical_state)
         return None
+
 

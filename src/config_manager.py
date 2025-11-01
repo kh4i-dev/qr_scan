@@ -3,18 +3,21 @@
 import json
 import os
 import logging
-from threading import Lock, RLock # (SỬA) Import RLock
+from threading import Lock, RLock 
 from .constants import CONFIG_FILE, SORT_LOG_FILE, DEFAULT_LANES_CFG, DEFAULT_TIMING_CFG
 from .system_state import SystemState
 
 class ConfigManager:
-    def __init__(self, state_manager, error_handler, ws_manager):
+    # (SỬA) Thêm main_running_event
+    def __init__(self, state_manager, error_handler, ws_manager, main_running_event):
         self.state = state_manager
         self.error_handler = error_handler
         self.ws_manager = ws_manager
+        self.main_running = main_running_event # (SỬA) Lưu tín hiệu
+        
         # (SỬA) Dùng RLock để tránh Deadlock khi load_config gọi save_config
         self.config_file_lock = RLock() 
-        self.sort_log_lock = RLock() # Dùng RLock cho nhất quán
+        self.sort_log_lock = RLock() 
 
     def _ensure_lane_ids(self, lanes_list):
         """Đảm bảo mỗi lane có một ID cố định."""
@@ -93,10 +96,15 @@ class ConfigManager:
     def periodic_save_thread(self):
         """Tự động lưu config và log đếm định kỳ."""
         from datetime import datetime
-
-        while True: # Luồng này chạy liên tục
-            from time import sleep
-            sleep(60) # Lưu mỗi 60 giây
+        
+        # (SỬA) Dùng tín hiệu main_running để dừng luồng
+        while self.main_running.is_set(): 
+            
+            # (SỬA) Dùng wait(60) thay vì sleep(60)
+            # Luồng sẽ "ngủ" 60 giây, nhưng sẽ tỉnh dậy ngay nếu main_running.clear() được gọi
+            stopped_early = self.main_running.wait(60) 
+            if not self.main_running.is_set() or stopped_early:
+                break # Thoát luồng nếu hệ thống đang tắt
 
             if self.error_handler.is_maintenance(): continue
             
@@ -127,4 +135,6 @@ class ConfigManager:
 
             except Exception as e:
                 logging.error(f"[SAVE] Lỗi khi tự động lưu state: {e}")
+        
+        logging.info("[ConfigSave] Luồng lưu tự động đã dừng.") # Log khi thoát
 
