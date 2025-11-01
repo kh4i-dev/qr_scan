@@ -133,8 +133,7 @@ class SortingSystem:
         threading.Thread(target=self._qr_detection_loop, name="QRScannerLogic", daemon=True).start()
         threading.Thread(target=self._sensor_monitoring_thread, name="SensorMon", daemon=True).start()
         
-        logging.info("="*55 + "\n HỆ THỐNG PHÂN LOẠI SẴN SÀNG \n" + "="*55)
-        
+        self._print_startup_log()         
         # 4. Chạy Web Server
         host = '0.0.0.0'; port = 3000
         if WAITRESS_AVAILABLE:
@@ -156,6 +155,31 @@ class SortingSystem:
         self.last_s_state = [1] * num_lanes
         self.last_s_trig = [0.0] * num_lanes
         self.last_entry_trigger_time = 0.0
+    def _print_startup_log(self):
+        """In log trạng thái chi tiết khi khởi động thành công."""
+        # Import lại các hằng số cần thiết (đã có ở đầu file main.py)
+        from src.constants import USERNAME, PASSWORD, AUTH_ENABLED
+        
+        # Dữ liệu từ instance của SortingSystem
+        is_real_gpio = not self.gpio_handler.is_mock()
+        gpio_mode = self.state_manager.state['timing_config'].get("gpio_mode", "BCM")
+        
+        # Xác định WAITRESS_AVAILABLE (đã có ở đầu file main.py)
+        # SỬA DỤNG biến global WAITRESS_AVAILABLE từ scope ngoài
+        WAITRESS_STATUS = "Waitress (Production)" if locals().get('WAITRESS_AVAILABLE') else "Flask Dev (TẠM THỜI)"
+
+        logging.info("="*55)
+        logging.info("  HỆ THỐNG PHÂN LOẠI SẴN SÀNG (Modular Hybrid / Gated FIFO)")
+        logging.info(f"  Logic: Gated FIFO (SENSOR_ENTRY & QR Match)") 
+        logging.info(f"  GPIO Mode: {'REAL' if is_real_gpio else 'MOCK'} (Config: {gpio_mode})")
+        logging.info(f"  Web Server: {WAITRESS_STATUS}")
+        logging.info(f"  API State: http://<IP_CUA_PI>:3000")
+        
+        if AUTH_ENABLED:
+            logging.info(f"  Truy cập: http://<IP_CUA_PI>:3000 (User: {USERNAME} / Pass: {PASSWORD})")
+        else:
+            logging.info("  Truy cập: http://<IP_CUA_PI>:3000 (KHÔNG yêu cầu đăng nhập)")
+        logging.info("="*55)    
 
     # =========================================================================
     #             LOGIC HỆ THỐNG (THREADS)
@@ -414,3 +438,33 @@ class SortingSystem:
                 self.ws_manager.broadcast_log({"log_type": "info", "message": msg})
             else:
                 self.state_manager.update_lane_status(lane_index, {"status": "Lỗi/Sẵn sàng"})
+if __name__ == "__main__":
+    app_system = None 
+
+    # Cấu hình logging đã được gọi ở đầu file main.py, không cần gọi lại ở đây
+    # (logging.basicConfig(...) ...)
+
+    try:
+        # 1. Khởi tạo đối tượng (chạy __init__)
+        app_system = SortingSystem()
+        
+        # 2. Khởi động toàn bộ logic (chạy start(), bao gồm GPIO, Threads và Webserver)
+        app_system.start() 
+
+    except KeyboardInterrupt:
+        logging.info("\n🛑 Dừng hệ thống (Ctrl+C)...")
+        
+    except Exception as main_e:
+        logging.critical(f"[CRITICAL] Lỗi khởi động hệ thống: {main_e}", exc_info=True)
+
+    finally:
+        # Khối dọn dẹp (chức năng cleanup của phiên bản cũ)
+        if app_system is not None:
+            # Phương thức stop() đảm nhiệm việc:
+            # - Dừng luồng chính
+            # - Tắt ThreadPoolExecutor
+            # - Gọi gpio_handler.cleanup() (tương đương GPIO.cleanup())
+            app_system.stop()
+            logging.info("✅ Cleanup hoàn tất. Tạm biệt!")
+        else:
+            logging.info("👋 Tạm biệt! (Hệ thống chưa kịp khởi tạo hoàn chỉnh)")

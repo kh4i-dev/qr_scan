@@ -1,0 +1,28 @@
+2025-11-01 18:27:01,015 [INFO] (MainThread) Không tìm thấy RPi.GPIO. Sử dụng MockGPIO.
+2025-11-01 18:27:01,017 [WARNING] (MainThread) ==================================================
+ĐANG CHẠY Ở CHẾ ĐỘ GIẢ LẬP (MOCK GPIO).
+==================================================
+2025-11-01 18:27:01,018 [WARNING] (MainThread) [YOLO] Thư viện 'ultralytics' không có. KHÔNG thể dùng YOLO.
+2025-11-01 18:27:01,024 [INFO] (MainThread) --- HỆ THỐNG ĐANG KHỞI ĐỘNG (Modular Hybrid) ---
+2025-11-01 18:27:01,025 [WARNING] (MainThread) [CONFIG] Không tìm thấy config.json, tạo file mới với cấu hình mặc định.
+2025-11-01 18:40:31,702 [INFO] (MainThread) Không tìm thấy RPi.GPIO. Sử dụng MockGPIO.
+2025-11-01 18:40:31,704 [WARNING] (MainThread) ==================================================
+ĐANG CHẠY Ở CHẾ ĐỘ GIẢ LẬP (MOCK GPIO).
+==================================================
+2025-11-01 18:40:31,704 [WARNING] (MainThread) [YOLO] Thư viện 'ultralytics' không có. KHÔNG thể dùng YOLO.
+2025-11-01 18:40:31,707 [INFO] (MainThread) --- HỆ THỐNG ĐANG KHỞI ĐỘNG (Modular Hybrid) ---
+2025-11-01 18:40:31,707 [WARNING] (MainThread) [CONFIG] Không tìm thấy config.json, tạo file mới với cấu hình mặc định.
+2025-11-01 18:40:58,936 [INFO] (MainThread) Không tìm thấy RPi.GPIO. Sử dụng MockGPIO.
+2025-11-01 18:40:58,936 [WARNING] (MainThread) ==================================================
+ĐANG CHẠY Ở CHẾ ĐỘ GIẢ LẬP (MOCK GPIO).
+==================================================
+2025-11-01 18:40:58,937 [WARNING] (MainThread) [YOLO] Thư viện 'ultralytics' không có. KHÔNG thể dùng YOLO.
+2025-11-01 18:40:58,940 [INFO] (MainThread) --- HỆ THỐNG ĐANG KHỞI ĐỘNG (Modular Hybrid) ---
+2025-11-01 18:40:58,940 [WARNING] (MainThread) [CONFIG] Không tìm thấy config.json, tạo file mới với cấu hình mặc định.
+2025-11-01 18:42:26,887 [INFO] (MainThread) Không tìm thấy RPi.GPIO. Sử dụng MockGPIO.
+2025-11-01 18:42:26,888 [WARNING] (MainThread) ==================================================
+ĐANG CHẠY Ở CHẾ ĐỘ GIẢ LẬP (MOCK GPIO).
+==================================================
+2025-11-01 18:42:26,888 [WARNING] (MainThread) [YOLO] Thư viện 'ultralytics' không có. KHÔNG thể dùng YOLO.
+2025-11-01 18:42:26,891 [INFO] (MainThread) --- HỆ THỐNG ĐANG KHỞI ĐỘNG (Modular Hybrid) ---
+2025-11-01 18:42:26,891 [WARNING] (MainThread) [CONFIG] Không tìm thấy config.json, tạo file mới với cấu hình mặc định.
