@@ -35,7 +35,7 @@ for extra_path in (PROJECT_ROOT, SRC_DIR, PARENT_DIR):
 
 
 # --- Import Modules ---
-# Đảm bảo tất cả import đều dùng tiền tố 'src.' do cấu trúc thư mục
+# (SỬA) Import USERNAME và AUTH_ENABLED để dùng trong log khởi động
 from src.constants import USERNAME, PASSWORD, PIN_ENTRY, ACTIVE_LOW, AUTH_ENABLED
 from src.error_handler import ErrorHandler
 from src.gpio_handler import GPIOHandler, get_gpio_provider
@@ -46,7 +46,7 @@ from src.camera_manager import CameraManager
 from src.qr_scanner import QRScanner
 from src.websocket_manager import WebSocketManager
 from src.api_routes import APIRouter
-from src.test_workers import run_test_relay_worker, run_test_all_relays_worker # Import Worker Test
+from src.test_workers import run_test_relay_worker, run_test_all_relays_worker 
 from src.utils import canon_id # Dùng cho logic Mapping
 
 # --- Cấu hình Logging (tối thiểu) ---
@@ -67,7 +67,7 @@ class SortingSystem:
         self.gpio_handler = GPIOHandler(self.error_handler)
         self.state_manager = SystemState(self.gpio_handler.is_mock())
         self.config_manager = ConfigManager(self.state_manager, self.error_handler, self.ws_manager)
-        self.queue_manager = QueueManager(self.state_manager)
+        self.queue_manager = QueueManager(self.state_manager) # (SỬA) QueueManager mới
         self.camera_manager = CameraManager(self.error_handler)
         self.qr_scanner = QRScanner() # Model YOLO được tải bên trong
 
@@ -77,7 +77,7 @@ class SortingSystem:
         
         # Biến trạng thái sensor (dùng trong Sensor Monitoring Thread)
         self.last_s_state, self.last_s_trig = [], []
-        self.last_entry_trigger_time = 0.0
+        self.last_entry_trigger_time = 0.0 # (MỚI) Thêm biến cho SENSOR_ENTRY
         self.auto_test_enabled = False
         
         # 3. Cấu hình Flask
@@ -91,7 +91,7 @@ class SortingSystem:
     # --- Các hàm phụ trợ cho Router ---
     def _stream_frames_generator(self):
         """Generator stream video (được gọi từ APIRouter)."""
-        while True: 
+        while self.main_running.is_set(): # (SỬA) Dùng self.main_running
             if self.error_handler.is_maintenance(): 
                 time.sleep(0.5); continue
             
@@ -109,64 +109,75 @@ class SortingSystem:
 
     def _run_test_relay_worker(self, lane_index, relay_action):
         """Wrapper gọi worker test relay (dùng cho APIRouter)."""
+        # (SỬA) Chuyển worker sang self.executor
         self.executor.submit(run_test_relay_worker, self, lane_index, relay_action)
 
     def _run_test_all_relays_worker(self):
         """Wrapper gọi worker test tuần tự (dùng cho APIRouter)."""
+        # (SỬA) Chuyển worker sang self.executor
         self.executor.submit(run_test_all_relays_worker, self)
 
     # --- 2. Khởi động Hệ thống ---
     def start(self):
+        """(SỬA) Thêm try/except để bắt lỗi khởi động GPIO/Config"""
         try:
             logging.info("--- HỆ THỐNG ĐANG KHỞI ĐỘNG (Modular Hybrid) ---")
             self.main_running.set()
 
-            # Khởi tạo cấu hình và GPIO
-            try:
-                lanes_cfg, timing_cfg = self.config_manager.load_config()
-                self.gpio_handler.setup_pins(lanes_cfg, timing_cfg)
-                self._initialize_sensor_states()
-            except Exception as e:
-                logging.error(f"[STARTUP] Lỗi cấu hình/GPIO: {e}", exc_info=True)
-                raise RuntimeError("Khởi tạo cấu hình/GPIO thất bại.") from e
-
-            # 2. Khởi động các luồng nền (Bao gồm Camera)
+            # 1. Tải cấu hình và Setup GPIO
+            logging.info("[START] Đang tải cấu hình...")
+            lanes_cfg, timing_cfg = self.config_manager.load_config()
+            
+            logging.info("[START] Đang thiết lập chân GPIO...")
+            self.gpio_handler.setup_pins(lanes_cfg, timing_cfg)
+            
+            logging.info("[START] Đang khởi tạo trạng thái sensor...")
+            self._initialize_sensor_states()
+            
+            # 2. Khởi động các luồng nền
+            logging.info("[START] Đang khởi động Camera...")
             self.camera_manager.start()
+            
+            logging.info("[START] Đang khởi động các luồng nền (Broadcast, ConfigSave)...")
             threading.Thread(target=self.ws_manager.broadcast_state_thread, name="StateBcast", daemon=True, args=(self.state_manager, self.error_handler)).start()
             threading.Thread(target=self.config_manager.periodic_save_thread, name="ConfigSave", daemon=True).start()
             
             # 3. Khởi động luồng Logic
+            logging.info("[START] Đang khởi động luồng Logic (QR, Sensor)...")
             threading.Thread(target=self._qr_detection_loop, name="QRScannerLogic", daemon=True).start()
             threading.Thread(target=self._sensor_monitoring_thread, name="SensorMon", daemon=True).start()
             
-            self._print_startup_log()         
+            # (SỬA) In log khởi động chi tiết
+            self._print_startup_log()
             
-            # 4. Chạy Web Server
+            # 4. Chạy Web Server (Blocking)
             host = '0.0.0.0'; port = 3000
-            try:
-                if WAITRESS_AVAILABLE:
-                    logging.info(f"✅ SERVER MODE: Waitress (Production). Listening on http://{host}:{port}")
-                    serve(self.app, host=host, port=port, threads=8, connection_limit=200)
-                else:
-                    logging.warning("⚠️ KHÔNG tìm thấy Waitress. Dùng Flask dev server (TẠM THỜI).")
-                    self.app.run(host=host, port=port, debug=False)
-            except Exception as e:
-                # Bắt lỗi nếu port bị chiếm, v.v.
-                logging.critical(f"[STARTUP] Lỗi khởi động Web Server: {e}", exc_info=True)
-                raise RuntimeError("Khởi động Web Server thất bại.") from e
-            
-        except RuntimeError:
-            # Bắt lỗi khởi tạo và đảm bảo dọn dẹp được gọi qua khối finally bên ngoài
+            if WAITRESS_AVAILABLE:
+                logging.info(f"✅ SERVER MODE: Waitress (Production). Listening on http://{host}:{port}")
+                serve(self.app, host=host, port=port, threads=8, connection_limit=200)
+            else:
+                logging.warning("⚠️ KHÔNG tìm thấy Waitress. Dùng Flask dev server (TẠM THỜI).")
+                self.app.run(host=host, port=port, debug=False)
+
+        except Exception as e:
+            # Bắt lỗi nghiêm trọng khi khởi động (ví dụ: Lỗi GPIO từ sys.exit(1))
+            logging.critical(f"Lỗi nghiêm trọng khi khởi động hệ thống: {e}", exc_info=True)
             self.stop()
+            # Ném lỗi ra ngoài để khối __main__ bắt được
             raise
 
     def stop(self):
-        # (ĐÃ SỬA) Phát tín hiệu dừng và thêm độ trễ để các luồng kịp thoát
+        """(SỬA) Thêm time.sleep để đảm bảo các luồng dừng sạch sẽ"""
+        # 1. Phát tín hiệu dừng cho tất cả các vòng lặp chính
         self.main_running.clear()
+        
+        # 2. (MỚI) Thêm độ trễ ngắn để các luồng nền (QR, Sensor) kịp thời thoát
+        import time
         time.sleep(0.5) 
 
+        # 3. Dừng các tài nguyên khác
         self.camera_manager.stop()
-        self.executor.shutdown(wait=False)
+        self.executor.shutdown(wait=False, cancel_futures=True) # (SỬA) Thêm cancel_futures
         self.gpio_handler.cleanup()
 
     def _initialize_sensor_states(self):
@@ -174,22 +185,23 @@ class SortingSystem:
         num_lanes = len(self.state_manager.state['lanes'])
         self.last_s_state = [1] * num_lanes
         self.last_s_trig = [0.0] * num_lanes
+        # (MỚI) Khởi tạo cho SENSOR_ENTRY
         self.last_entry_trigger_time = 0.0
 
-    # (MỚI) Phương thức in log chi tiết khi khởi động
     def _print_startup_log(self):
-        """In log trạng thái chi tiết khi khởi động thành công."""
-        # Lấy các hằng số từ global scope của main.py (đã được import)
-        global USERNAME, PASSWORD, AUTH_ENABLED, WAITRESS_AVAILABLE
+        """(SỬA) In log trạng thái chi tiết khi khởi động thành công."""
         
         # Dữ liệu từ instance của SortingSystem
         is_real_gpio = not self.gpio_handler.is_mock()
         gpio_mode = self.state_manager.state['timing_config'].get("gpio_mode", "BCM")
         
+        # (SỬA) Truy cập biến global WAITRESS_AVAILABLE
+        global WAITRESS_AVAILABLE
         WAITRESS_STATUS = "Waitress (Production)" if WAITRESS_AVAILABLE else "Flask Dev (TẠM THỜI)"
 
         logging.info("="*55)
         logging.info("  HỆ THỐNG PHÂN LOẠI SẴN SÀNG (Modular Hybrid / Gated FIFO)")
+        # (MỚI) Cập nhật logic
         logging.info(f"  Logic: Gated FIFO (SENSOR_ENTRY & QR Match)") 
         logging.info(f"  GPIO Mode: {'REAL' if is_real_gpio else 'MOCK'} (Config: {gpio_mode})")
         logging.info(f"  Web Server: {WAITRESS_STATUS}")
@@ -199,16 +211,15 @@ class SortingSystem:
             logging.info(f"  Truy cập: http://<IP_CUA_PI>:3000 (User: {USERNAME} / Pass: {PASSWORD})")
         else:
             logging.info("  Truy cập: http://<IP_CUA_PI>:3000 (KHÔNG yêu cầu đăng nhập)")
-        logging.info("="*55)
-        
+        logging.info("="*55)    
 
     # =========================================================================
     #             LOGIC HỆ THỐNG (THREADS)
     # =========================================================================
 
-    # --- QR Detection Loop ---
+    # --- (SỬA) QR Detection Loop (Đơn giản hóa) ---
     def _qr_detection_loop(self):
-        """Luồng quét QR (Hybrid YOLO + Pyzbar) và thêm vào hàng chờ."""
+        """Luồng quét QR (Hybrid YOLO + Pyzbar) và chỉ thêm vào hàng chờ."""
         while self.main_running.is_set():
             if self.error_handler.is_maintenance() or self.auto_test_enabled:
                 time.sleep(0.2); continue
@@ -239,144 +250,147 @@ class SortingSystem:
                         "data_raw": raw
                     }
                     
-                    is_pending_match = self._check_pending_match(mapped_index)
+                    # (SỬA) Logic Gated FIFO: Chỉ cần thêm vào hàng chờ QR.
+                    # Luồng sensor sẽ xử lý việc khớp với tín hiệu gác cổng.
+                    self.queue_manager.add_qr_item(queue_item)
+                    self.state_manager.update_lane_status(mapped_index, {"status": "Đang chờ vật..."})
                     
-                    if is_pending_match:
-                        # TRƯỜNG HỢP 1: Sensor đã kích hoạt TRƯỚC (Sensor-First)
-                        self._process_sort_trigger(mapped_index, queue_item, "Khớp pending sensor")
-                    else:
-                        # TRƯỜNG HỢP 2: QR tới trước (QR-First) -> Thêm vào hàng chờ
-                        self.queue_manager.add_qr_item(queue_item)
-                        
-                        self.state_manager.update_lane_status(mapped_index, {"status": "Đang chờ vật..."})
-                        
-                        self.ws_manager.broadcast_log({
-                            "log_type": "qr", 
-                            "data": raw, "data_key": key,
-                            "message": f"QR '{raw}' ({source}) -> Thêm vào hàng chờ"
-                        })
-                        logging.info(f"[QR] '{raw}' (key: '{key}', src: {source}) -> lane {mapped_index} (Thêm vào hàng chờ)")
+                    self.ws_manager.broadcast_log({
+                        "log_type": "qr", 
+                        "data": raw, "data_key": key,
+                        "message": f"QR '{raw}' ({source}) -> Thêm vào hàng chờ"
+                    })
+                    logging.info(f"[QR] '{raw}' (key: '{key}', src: {source}) -> lane {mapped_index} (Thêm vào hàng chờ)")
 
-            time.sleep(0.01)
+            time.sleep(0.01) # Quét nhanh
 
-    # --- Sensor Monitoring Loop (GATED FIFO) ---
+    # --- (SỬA) Sensor Monitoring Loop (GATED FIFO MỚI) ---
     def _sensor_monitoring_thread(self):
-        """Luồng giám sát sensor với logic Gated FIFO."""
+        """Luồng giám sát sensor với logic Gated FIFO (Logic 2 tín hiệu)."""
         while self.main_running.is_set():
             if self.error_handler.is_maintenance() or self.auto_test_enabled:
                 time.sleep(0.2); continue
 
-            cfg = self.state_manager.state['timing_config']
-            debounce_time = cfg.get('sensor_debounce', 0.1)
-            queue_timeout = cfg.get('queue_head_timeout', 15.0)
-            pending_timeout = cfg.get('pending_trigger_timeout', 0.5)
-            lanes = self.state_manager.state['lanes']
-            num_lanes = len(lanes)
-            now = time.time()
-            
-            # 1. LOGIC CHỐNG KẸT HÀNG CHỜ QR
-            timeout_item = self.queue_manager.check_qr_timeout(queue_timeout)
-            if timeout_item:
-                expected_lane_name = lanes[timeout_item['lane_index']]['name']
-                self.ws_manager.broadcast_log({
-                    "log_type": "warn",
-                    "message": f"TIMEOUT! Tự động xóa {expected_lane_name} khỏi hàng chờ (>{queue_timeout}s)."
-                })
-                self.state_manager.update_lane_status(timeout_item['lane_index'], {"status": "Sẵn sàng"})
-
-            # 2. ĐỌC SENSOR ĐẦU VÀO (PIN_ENTRY)
             try:
-                entry_sensor_now = self.gpio_handler.read_sensor(PIN_ENTRY)
-                # Phát hiện sườn xuống (1 -> 0)
-                if entry_sensor_now == 0 and (now - self.last_entry_trigger_time > debounce_time):
-                    self.last_entry_trigger_time = now
-                    token_count = self.queue_manager.add_entry_token()
-                    self.ws_manager.broadcast_log({"log_type": "info", "message": f"Vật qua cổng (SENSOR_ENTRY, Pin {PIN_ENTRY}). Tokens: {token_count}"})
-                    
-                self.state_manager.update_lane_status(num_lanes, {"sensor_reading": entry_sensor_now}) # Cập nhật trạng thái sensor cổng
-                # Cập nhật số token cho UI (giả định)
-                self.state_manager.update_lane_status(num_lanes, {"entry_token_count": self.queue_manager.get_entry_queue_length()})
-
-            except Exception as e:
-                self.error_handler.trigger_maintenance(f"Lỗi đọc SENSOR_ENTRY: {e}")
+                cfg = self.state_manager.state['timing_config']
+                debounce_time = cfg.get('sensor_debounce', 0.1)
+                queue_timeout = cfg.get('queue_head_timeout', 15.0)
+                lanes = self.state_manager.state['lanes']
+                num_lanes = len(lanes)
+                now = time.time()
                 
-            # 3. ĐỌC CÁC SENSOR PHÂN LOẠI (Lanes)
-            for i in range(num_lanes):
-                lane_cfg = lanes[i]
-                sensor_pin, push_pin, lane_name = lane_cfg.get("sensor_pin"), lane_cfg.get("push_pin"), lane_cfg['name']
+                # 1. LOGIC CHỐNG KẸT HÀNG CHỜ QR (Giữ nguyên)
+                timeout_item = self.queue_manager.check_qr_timeout(queue_timeout)
+                if timeout_item:
+                    expected_lane_name = lanes[timeout_item['lane_index']]['name']
+                    self.ws_manager.broadcast_log({
+                        "log_type": "warn",
+                        "message": f"TIMEOUT! Tự động xóa {expected_lane_name} khỏi hàng chờ (>{queue_timeout}s)."
+                    })
+                    self.state_manager.update_lane_status(timeout_item['lane_index'], {"status": "Sẵn sàng"})
 
-                if sensor_pin is None: continue
-                
+                # 2. (MỚI) ĐỌC SENSOR ĐẦU VÀO (PIN_ENTRY)
                 try:
-                    sensor_now = self.gpio_handler.read_sensor(sensor_pin)
-                except Exception as gpio_e:
-                    self.error_handler.trigger_maintenance(f"Lỗi đọc sensor {lane_name}: {gpio_e}")
-                    continue
-
-                self.state_manager.update_lane_status(i, {"sensor_reading": sensor_now})
-
-                # Phát hiện sườn xuống (1 -> 0)
-                if sensor_now == 0 and self.last_s_state[i] == 1:
-                    if (now - self.last_s_trig[i]) > debounce_time:
-                        self.last_s_trig[i] = now
-
-                        # --- LOGIC GATED FIFO (2-WAY CHECK) ---
-                        item_to_process = self.queue_manager.pop_qr_by_index(i)
+                    entry_sensor_now = self.gpio_handler.read_sensor(PIN_ENTRY)
+                    # Phát hiện sườn xuống (1 -> 0)
+                    if entry_sensor_now == 0 and (now - self.last_entry_trigger_time > debounce_time):
+                        self.last_entry_trigger_time = now
+                        token_count = self.queue_manager.add_entry_token()
                         
-                        if item_to_process:
-                            # 2. KHỚP (QR-First, hoặc Vượt Hàng) -> KIỂM TRA ENTRY TOKEN
-                            if self.queue_manager.consume_entry_token():
-                                # CÓ CẢ QR VÀ TOKEN ENTRY -> PROCESS SORT
-                                self._process_sort_trigger(i, item_to_process, "Khớp QR + Token Entry")
-                            else:
-                                # CÓ QR, KHÔNG CÓ TOKEN -> BỎ QUA (False trigger)
-                                self.ws_manager.broadcast_log({"log_type": "warn", "message": f"Sensor {lane_name} kích hoạt! QR có, TOKEN Entry KHÔNG. Bỏ qua (False Trigger)."})
-                                
-                        elif not self.queue_manager.is_entry_queue_empty():
-                            # 1. HÀNG CHỜ QR RỖNG, NHƯNG ENTRY CÓ TOKEN
-                            if push_pin is None:
-                                # Lane đi thẳng (pass-through) -> Chỉ cần TOKEN -> PROCESS SORT
-                                self.queue_manager.consume_entry_token() # Dùng Token
-                                self._process_sort_trigger(i, None, "Token Entry (Pass-Through)")
-                            else:
-                                # Lane đẩy, chỉ có Token -> KHÔNG HÀNH ĐỘNG
-                                # Lý do: Nếu QR không đến kịp (timeout QR), ta không muốn đẩy một vật không rõ loại.
-                                self.ws_manager.broadcast_log({"log_type": "warn", "message": f"Sensor {lane_name} kích hoạt! TOKEN có, QR rỗng. Bỏ qua để đợi QR (Nếu QR timeout, token sẽ bị mất)."})
+                        msg = f"Vật qua cổng (SENSOR_ENTRY, Pin {PIN_ENTRY}). Tokens: {token_count}"
+                        self.ws_manager.broadcast_log({"log_type": "info", "message": msg})
+                        logging.info(f"[SENSOR] {msg}")
+                        
+                    # Cập nhật trạng thái sensor cổng cho UI (index = num_lanes)
+                    self.state_manager.update_lane_status(num_lanes, {"sensor_reading": entry_sensor_now})
 
-                        else:
-                            # 3. CẢ HAI HÀNG CHỜ ĐỀU RỖNG
-                            if push_pin is None:
-                                # Lane đi thẳng (Pass-Through) -> KHÔNG CÓ QR, KHÔNG CÓ TOKEN
-                                self.ws_manager.broadcast_log({"log_type": "warn", "message": f"Sensor {lane_name} kích hoạt! Không có Token/QR. Bỏ qua."})
-                            # Nếu là lane đẩy, không làm gì.
+                except Exception as e:
+                    # Nếu SENSOR_ENTRY lỗi, dừng hệ thống
+                    self.error_handler.trigger_maintenance(f"Lỗi đọc SENSOR_ENTRY (Pin {PIN_ENTRY}): {e}")
+                    time.sleep(1); continue
+                    
+                # 3. ĐỌC CÁC SENSOR PHÂN LOẠI (Lanes)
+                for i in range(num_lanes):
+                    lane_cfg = lanes[i]
+                    sensor_pin, push_pin, lane_name = lane_cfg.get("sensor_pin"), lane_cfg.get("push_pin"), lane_cfg['name']
 
-                self.last_s_state[i] = sensor_now
+                    if sensor_pin is None: continue # Bỏ qua lane không có sensor
+                    
+                    try:
+                        sensor_now = self.gpio_handler.read_sensor(sensor_pin)
+                    except Exception as gpio_e:
+                        self.error_handler.trigger_maintenance(f"Lỗi đọc sensor {lane_name}: {gpio_e}")
+                        continue # Bỏ qua lane này
+
+                    self.state_manager.update_lane_status(i, {"sensor_reading": sensor_now})
+
+                    # Phát hiện sườn xuống (1 -> 0)
+                    if sensor_now == 0 and self.last_s_state[i] == 1:
+                        if (now - self.last_s_trig[i]) > debounce_time:
+                            self.last_s_trig[i] = now
+
+                            # --- LOGIC GATED FIFO (2-WAY CHECK) ---
+                            # Kiểm tra xem có QR khớp cho lane này không
+                            item_to_process = self.queue_manager.pop_qr_by_index(i)
+                            
+                            if item_to_process:
+                                # TRƯỜNG HỢP 1: CÓ QR KHỚP
+                                # Kiểm tra xem có tín hiệu gác cổng (token) không
+                                if self.queue_manager.consume_entry_token():
+                                    # CÓ CẢ QR VÀ TOKEN ENTRY -> PROCESS SORT
+                                    self._process_sort_trigger(i, item_to_process, "Khớp QR + Token Entry")
+                                else:
+                                    # CÓ QR, KHÔNG CÓ TOKEN -> BỎ QUA (False trigger)
+                                    msg = f"Sensor {lane_name} kích hoạt! QR có, TOKEN Entry KHÔNG. Bỏ qua (False Trigger)."
+                                    self.ws_manager.broadcast_log({"log_type": "warn", "message": msg})
+                                    logging.warning(f"[LOGIC] {msg}")
+                                    # Ghi chú: item_to_process đã bị pop (mất), điều này là chấp nhận được
+                                    
+                            elif not self.queue_manager.is_entry_queue_empty():
+                                # TRƯỜNG HỢP 2: KHÔNG CÓ QR, NHƯNG CÓ TOKEN (Vật lạ)
+                                if push_pin is None:
+                                    # Lane đi thẳng (pass-through) -> Chỉ cần TOKEN -> PROCESS SORT
+                                    self.queue_manager.consume_entry_token() # Dùng Token
+                                    self._process_sort_trigger(i, None, "Token Entry (Pass-Through)")
+                                else:
+                                    # Lane đẩy, chỉ có Token (Vật lạ) -> KHÔNG HÀNH ĐỘNG
+                                    # Không dùng token, chờ QR (nếu QR đến trễ)
+                                    msg = f"Sensor {lane_name} kích hoạt! TOKEN có, QR rỗng. Bỏ qua (Chờ QR)."
+                                    self.ws_manager.broadcast_log({"log_type": "warn", "message": msg})
+                                    logging.warning(f"[LOGIC] {msg}")
+
+                            else:
+                                # TRƯỜN HỢP 3: CẢ HAI HÀNG CHỜ ĐỀU RỖNG (Kích hoạt nhầm)
+                                msg = f"Sensor {lane_name} kích hoạt! Không có Token/QR. Bỏ qua."
+                                self.ws_manager.broadcast_log({"log_type": "warn", "message": msg})
+                                logging.warning(f"[LOGIC] {msg}")
+
+                    self.last_s_state[i] = sensor_now
+                
+                # 4. Cập nhật số token cho UI sau khi quét qua các sensor lane
+                # (index = num_lanes)
+                self.state_manager.update_lane_status(num_lanes, {"entry_token_count": self.queue_manager.get_entry_queue_length()})
             
-            # Cập nhật số token cho UI sau khi quét qua các sensor lane
-            self.state_manager.update_lane_status(num_lanes, {"entry_token_count": self.queue_manager.get_entry_queue_length()})
-            
+            except Exception as loop_e:
+                logging.error(f"[SensorMon] Lỗi không mong muốn trong vòng lặp: {loop_e}", exc_info=True)
+                
             time.sleep(0.01) # Quét nhanh
 
-    def _check_pending_match(self, lane_index):
-        """Kiểm tra QR vừa quét có khớp với Token đang chờ không (Sensor-First)."""
-        # Trong Logic Gated FIFO, Sensor-First xảy ra khi: 
-        # Token Entry đã được tạo VÀ Sensor Lane đã kích hoạt, NHƯNG QR chưa đến.
-        # Khi QR đến, ta chỉ cần kiểm tra xem có token nào đang chờ không.
-        
-        if self.queue_manager.get_entry_queue_length() > 0:
-            return True
-        return False
-        
+    # --- (XÓA) Phương thức này không còn cần thiết trong Gated FIFO ---
+    # def _check_pending_match(self, lane_index):
+    #     ...
+
     def _process_sort_trigger(self, lane_index, qr_item, log_context):
         """Khởi động tiến trình phân loại và cập nhật trạng thái."""
         lane_info = self.state_manager.get_lane_info(lane_index)
         if not lane_info: return
 
         lane_name = lane_info['name']
-        qr_key = qr_item['qr_key'] if qr_item else None
+        # (SỬA) Xử lý trường hợp đi thẳng (qr_item là None)
+        qr_key = qr_item['qr_key'] if qr_item else "N/A"
         lane_id = lane_info['id'] # Luôn dùng ID của lane đang được xử lý
 
-        self.ws_manager.broadcast_log({"log_type": "info", "message": f"Kích hoạt Phân loại {lane_name} ({log_context})."})
+        logging.info(f"[LOGIC] Kích hoạt Phân loại {lane_name} (Context: {log_context}, QR: {qr_key}).")
         self.state_manager.update_lane_status(lane_index, {"status": "Đang chờ đẩy"})
         
         # Gửi đến ThreadPoolExecutor để không block Sensor/QR thread
@@ -387,9 +401,11 @@ class SortingSystem:
         lane_info = self.state_manager.get_lane_info(lane_index)
         if not lane_info: return
         
+        # (SỬA) Đảm bảo main_running được kiểm tra
+        if not self.main_running.is_set(): return
+        
         push_delay = self.state_manager.state['timing_config'].get('push_delay', 0.0)
-        lane_name_for_log = lane_info['name']
-
+        
         if push_delay > 0:
             time.sleep(push_delay)
 
@@ -415,8 +431,12 @@ class SortingSystem:
             self.state_manager.update_lane_status(lane_index, {"status": "Đang phân loại..." if is_sorting_lane else "Đang đi thẳng..."})
 
             if not is_sorting_lane:
-                self.ws_manager.broadcast_log({"log_type": "info", "message": f"Vật phẩm đi thẳng qua {lane_name}"})
+                # Đây là lane đi thẳng (Pass-Through)
+                logging.info(f"[SORT] Vật phẩm đi thẳng qua {lane_name}")
+                # (Không cần sleep, chỉ cần đếm)
             else:
+                # Đây là lane Phân loại (Đẩy)
+                logging.info(f"[SORT] Bắt đầu chu trình Piston cho {lane_name}...")
                 # 1. Nhả Grab (Pull OFF)
                 self.gpio_handler.relay_off(pull_pin)
                 self.state_manager.update_lane_status(lane_index, {"relay_grab": 0})
@@ -442,49 +462,49 @@ class SortingSystem:
             operation_successful = True
 
         except Exception as e:
-            logging.error(f"[SORT] Lỗi trong sorting_process (lane {lane_name}): {e}")
+            logging.error(f"[SORT] Lỗi trong sorting_process (lane {lane_name}): {e}", exc_info=True)
             self.error_handler.trigger_maintenance(f"Lỗi sorting_process (Lane {lane_name}): {e}")
         finally:
             if operation_successful:
-                current_count = self.state_manager.get_lane_info(lane_index)['count'] + 1
+                # (SỬA) Cập nhật số đếm và log
+                with self.state_manager.state_lock:
+                    current_count = self.state_manager.state['lanes'][lane_index]['count'] + 1
+                    self.state_manager.state['lanes'][lane_index]['count'] = current_count
+                    self.state_manager.state['lanes'][lane_index]['status'] = "Sẵn sàng"
+
                 log_type = "sort" if is_sorting_lane else "pass"
-                
-                self.state_manager.update_lane_status(lane_index, {
-                    "count": current_count,
-                    "status": "Sẵn sàng"
-                })
-                self.ws_manager.broadcast_log({"log_type": log_type, "name": lane_name, "count": current_count})
+                self.ws_manager.broadcast_log({"log_type": log_type, "data": {"name": lane_name, "count": current_count}})
                 
                 msg = f"Hoàn tất chu trình cho {lane_name}" if is_sorting_lane else f"Hoàn tất đếm vật phẩm đi thẳng qua {lane_name}"
-                self.ws_manager.broadcast_log({"log_type": "info", "message": msg})
+                logging.info(f"[SORT] {msg} (Tổng: {current_count})")
+                self.ws_manager.broadcast_log({"log_type": "info", "message": f"{msg} (Tổng: {current_count})"})
             else:
                 self.state_manager.update_lane_status(lane_index, {"status": "Lỗi/Sẵn sàng"})
 
+# (SỬA) Khối __main__ hoàn chỉnh với xử lý lỗi khởi động
 if __name__ == "__main__":
     app_system = None 
-
-    # Cấu hình logging đã được gọi ở đầu file main.py, không cần gọi lại ở đây
-    # (logging.basicConfig(...) ...)
-
     try:
         # 1. Khởi tạo đối tượng (chạy __init__)
         app_system = SortingSystem()
         
         # 2. Khởi động toàn bộ logic (chạy start(), bao gồm GPIO, Threads và Webserver)
+        #    Nếu start() thất bại (ví dụ: lỗi GPIO), nó sẽ ném Exception
         app_system.start() 
 
     except KeyboardInterrupt:
         logging.info("\n🛑 Dừng hệ thống (Ctrl+C)...")
         
     except Exception as main_e:
-        # Lỗi khởi động nghiêm trọng, cần log và dọn dẹp
-        logging.critical(f"[CRITICAL] Lỗi khởi động hệ thống: {main_e}", exc_info=True)
+        # Bắt lỗi nghiêm trọng nếu khởi động thất bại (được ném từ start())
+        logging.critical(f"[CRITICAL] Lỗi khởi động hệ thống thất bại: {main_e}", exc_info=False) # exc_info=False vì lỗi đã được log
 
     finally:
         # Khối dọn dẹp (chức năng cleanup của phiên bản cũ)
         if app_system is not None:
-            # Phương thức stop() đã được sửa để có time.sleep(0.5) bên trong, giúp các luồng thoát sạch sẽ
-            app_system.stop() 
+            logging.info("Đang thực hiện dọn dẹp và tắt hệ thống...")
+            app_system.stop()
             logging.info("✅ Cleanup hoàn tất. Tạm biệt!")
         else:
             logging.info("👋 Tạm biệt! (Hệ thống chưa kịp khởi tạo hoàn chỉnh)")
+
