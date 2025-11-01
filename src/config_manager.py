@@ -3,7 +3,7 @@
 import json
 import os
 import logging
-from threading import Lock, RLock 
+from threading import Lock, RLock # (SỬA) Import RLock
 from .constants import CONFIG_FILE, SORT_LOG_FILE, DEFAULT_LANES_CFG, DEFAULT_TIMING_CFG
 from .system_state import SystemState
 
@@ -17,7 +17,7 @@ class ConfigManager:
         
         # (SỬA) Dùng RLock để tránh Deadlock khi load_config gọi save_config
         self.config_file_lock = RLock() 
-        self.sort_log_lock = RLock() 
+        self.sort_log_lock = RLock() # Dùng RLock cho nhất quán
 
     def _ensure_lane_ids(self, lanes_list):
         """Đảm bảo mỗi lane có một ID cố định."""
@@ -57,7 +57,10 @@ class ConfigManager:
                     self.error_handler.trigger_maintenance(f"Lỗi file {CONFIG_FILE}: {e}")
             else:
                 logging.warning(f"[CONFIG] Không tìm thấy {CONFIG_FILE}, tạo file mới với cấu hình mặc định.")
-                self.save_config(loaded_cfg) # <--- Lệnh gọi này giờ đã an toàn
+                # (SỬA) Ghi log lỗi nếu không tạo được file
+                if not self.save_config(loaded_cfg):
+                     logging.error(f"[CRITICAL] KHÔNG THỂ TẠO FILE {CONFIG_FILE}. Kiểm tra quyền truy cập thư mục.")
+                     # Không cần raise, vì đã có exc_info=True trong atomic_save_json
 
         # Cập nhật trạng thái trung tâm
         with self.state.state_lock:
@@ -102,8 +105,10 @@ class ConfigManager:
             
             # (SỬA) Dùng wait(60) thay vì sleep(60)
             # Luồng sẽ "ngủ" 60 giây, nhưng sẽ tỉnh dậy ngay nếu main_running.clear() được gọi
-            stopped_early = self.main_running.wait(60) 
+            stopped_early = not self.main_running.wait(60) # wait() trả về True nếu event được set, False nếu timeout
+            
             if not self.main_running.is_set() or stopped_early:
+                logging.info("[ConfigSave] Nhận tín hiệu dừng, thoát luồng lưu tự động.")
                 break # Thoát luồng nếu hệ thống đang tắt
 
             if self.error_handler.is_maintenance(): continue
@@ -124,9 +129,11 @@ class ConfigManager:
                     if os.path.exists(SORT_LOG_FILE):
                         try:
                             with open(SORT_LOG_FILE, 'r', encoding='utf-8') as f:
-                                sort_log_data = json.load(f)
+                                content = f.read()
+                                if content: # Tránh lỗi JSON rỗng
+                                    sort_log_data = json.loads(content)
                         except Exception:
-                            sort_log_data = {}
+                            sort_log_data = {} # Reset nếu file bị lỗi
                 
                 sort_log_data[today] = counts_snapshot
                 
@@ -134,7 +141,7 @@ class ConfigManager:
                     logging.debug(f"[SORT_LOG] Đã tự động lưu số đếm vào {SORT_LOG_FILE}.")
 
             except Exception as e:
-                logging.error(f"[SAVE] Lỗi khi tự động lưu state: {e}")
+                logging.error(f"[SAVE] Lỗi khi tự động lưu state: {e}", exc_info=True)
         
         logging.info("[ConfigSave] Luồng lưu tự động đã dừng.") # Log khi thoát
 

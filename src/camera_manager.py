@@ -21,7 +21,6 @@ class CameraManager:
 
     def start(self):
         """Khởi tạo và chạy luồng camera."""
-        # (SỬA) Sửa lỗi thụt lề
         if self.camera_thread and self.camera_thread.is_alive():
             logging.info("[CAMERA] Camera đã chạy.")
             return
@@ -34,7 +33,7 @@ class CameraManager:
         # (MỚI) Chờ camera sẵn sàng hoặc timeout 5 giây
         logging.info("[CAMERA] Đang chờ tín hiệu sẵn sàng từ camera...")
         if not self.is_ready.wait(timeout=5.0):
-            self.main_running.clear() # (SỬA) Dùng main_running
+            # (SỬA) Không clear main_running ở đây, để main.py xử lý
             raise RuntimeError("Khởi động Camera Timeout (Chưa nhận được tín hiệu sẵn sàng sau 5s).")
         logging.info("[CAMERA] Tín hiệu Camera Sẵn sàng đã được nhận.")
 

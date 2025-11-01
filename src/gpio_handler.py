@@ -37,8 +37,10 @@ class RealGPIO(GPIOProvider):
         try:
             if pull_up_down: self.gpio.setup(pin, mode, pull_up_down=pull_up_down)
             else: self.gpio.setup(pin, mode)
-            logging.debug(f"[GPIO] Setup pin {pin} OK.")
+            # (SỬA) Bỏ log debug để giảm nhiễu
+            # logging.debug(f"[GPIO] Setup pin {pin} OK.")
         except Exception as e:
+            # (SỬA) Ném lỗi RuntimeError gốc
             logging.error(f"[GPIO] Lỗi setup pin {pin}: {e}", exc_info=True)
             raise RuntimeError(f"Lỗi setup pin {pin}") from e
 
@@ -136,6 +138,7 @@ class GPIOHandler:
                     self.gpio.setup(pin, self.gpio.IN, pull_up_down=self.gpio.PUD_UP)
                     logging.debug(f"[GPIO] Setup SENSOR Pin {pin} OK.")
                 except Exception as e:
+                    # (SỬA) Thoát chương trình nếu có lỗi setup
                     msg = f"Lỗi nghiêm trọng: Xung đột chân SENSOR {pin} ({e}). Kiểm tra xem chân này có bị chiếm dụng không."
                     logging.critical(f"[CRITICAL] {msg}", exc_info=True)
                     self.error_handler.trigger_maintenance(msg)
@@ -149,6 +152,7 @@ class GPIOHandler:
                     self.gpio.setup(pin, self.gpio.OUT)
                     logging.debug(f"[GPIO] Setup RELAY Pin {pin} OK.")
                 except Exception as e:
+                    # (SỬA) Thoát chương trình nếu có lỗi setup
                     msg = f"Lỗi nghiêm trọng: Xung đột chân RELAY {pin} ({e}). Kiểm tra xem chân này có bị chiếm dụng không."
                     logging.critical(f"[CRITICAL] {msg}", exc_info=True)
                     self.error_handler.trigger_maintenance(msg)
@@ -240,5 +244,4 @@ class GPIOHandler:
         if self.is_mock():
             return self.gpio.set_input_state(pin, logical_state)
         return None
-
 

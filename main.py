@@ -133,12 +133,12 @@ class SortingSystem:
             lanes_cfg, timing_cfg = self.config_manager.load_config()
             
             logging.info("[START] Đang thiết lập chân GPIO...")
-            self.gpio_handler.setup_pins(lanes_cfg, timing_cfg)
+            self.gpio_handler.setup_pins(lanes_cfg, timing_cfg) # <--- Sẽ sys.exit(1) nếu lỗi
             self._initialize_sensor_states()
             
             # 2. Khởi động các luồng nền (Camera, WebSocket)
             logging.info("[START] Đang khởi động Camera và WebSocket...")
-            self.camera_manager.start()
+            self.camera_manager.start() # <--- Sẽ raise RuntimeError nếu timeout
             threading.Thread(target=self.ws_manager.broadcast_state_thread, name="StateBcast", daemon=True, args=(self.state_manager, self.error_handler)).start()
             
             # 3. Khởi động luồng Logic (QR, Sensor)
@@ -163,13 +163,15 @@ class SortingSystem:
                 self.app.run(host=host, port=port, debug=False)
                 
         except Exception as e:
-            logging.critical(f"Lỗi khởi động hệ thống: {e}", exc_info=True)
+            # Bắt lỗi từ config_manager, gpio_handler, camera_manager
+            logging.critical(f"[CRITICAL] Lỗi khởi tạo hệ thống: {e}", exc_info=True)
             self.stop()
             # (SỬA) Ném lỗi ra ngoài để khối __main__ bắt được
             raise 
 
     def stop(self):
-        # 1. Phát tín hiệu dừng
+        """Dừng tất cả các luồng và dọn dẹp GPIO an toàn."""
+        # 1. Phát tín hiệu dừng cho tất cả các vòng lặp chính
         self.main_running.clear()
         
         # (SỬA) Thêm độ trễ ngắn để các luồng (daemon) kịp thoát
@@ -185,8 +187,6 @@ class SortingSystem:
 
     def _initialize_sensor_states(self):
         """Khởi tạo mảng trạng thái sensor."""
-        # (SỬA) Số lượng lanes bao gồm cả lane Gác Cổng (dummy lane)
-        # (SỬA) Logic Gated FIFO không cần dummy lane trong state, chỉ cần num_lanes
         num_lanes = len(self.state_manager.state['lanes'])
         self.last_s_state = [1] * num_lanes
         self.last_s_trig = [0.0] * num_lanes
@@ -194,11 +194,17 @@ class SortingSystem:
 
     def _print_startup_log(self):
         """In log trạng thái chi tiết khi khởi động thành công."""
-        # (SỬA) Import hằng số từ scope ngoài
+        # Import lại các hằng số cần thiết (đã có ở đầu file main.py)
+        from src.constants import USERNAME, PASSWORD, AUTH_ENABLED
+        
+        # (SỬA) Khai báo sử dụng biến global
         global WAITRESS_AVAILABLE
         
+        # Dữ liệu từ instance của SortingSystem
         is_real_gpio = not self.gpio_handler.is_mock()
         gpio_mode = self.state_manager.state['timing_config'].get("gpio_mode", "BCM")
+        
+        # Xác định WAITRESS_AVAILABLE 
         WAITRESS_STATUS = "Waitress (Production)" if WAITRESS_AVAILABLE else "Flask Dev (TẠM THỜI)"
 
         logging.info("="*55)
@@ -225,7 +231,17 @@ class SortingSystem:
             if self.error_handler.is_maintenance() or self.auto_test_enabled:
                 time.sleep(0.2); continue
             
+            # (SỬA) Kiểm tra camera sẵn sàng trước khi lấy frame
+            if not self.camera_manager.is_ready.is_set():
+                logging.warning("[QRThread] Chờ camera sẵn sàng...",)
+                time.sleep(1)
+                continue
+                
             frame = self.camera_manager.get_frame()
+            if frame is None:
+                time.sleep(0.05) # Chờ frame nếu camera đang bận
+                continue
+                
             qr_result = self.qr_scanner.scan_frame(frame)
             
             if qr_result:
@@ -375,6 +391,7 @@ class SortingSystem:
                 
                 # 4. Cập nhật số token cho UI sau khi quét qua các sensor lane
                 # (SỬA) Đổi tên 'count' thành 'entry_token_count' cho rõ ràng
+                # (SỬA) Cập nhật trạng thái sensor cổng cho UI (dùng index = num_lanes)
                 self.state_manager.update_lane_status(num_lanes, {"entry_token_count": self.queue_manager.get_entry_queue_length()})
             
             except Exception as loop_e:
@@ -425,7 +442,7 @@ class SortingSystem:
 
 
     def _sorting_process(self, lane_index, lane_info):
-        """Quy trình đẩy-thu piston (hoặc chỉ đếm)."""
+        """Quy trình đẩy-thu piston."""
         
         push_pin, pull_pin = lane_info.get("push_pin"), lane_info.get("pull_pin")
         lane_name = lane_info['name']
