@@ -8,6 +8,8 @@ import json
 import threading
 import logging
 import os
+import sys
+from pathlib import Path
 import functools
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, render_template, Response, jsonify, request
@@ -21,9 +23,19 @@ try:
 except ImportError:
     serve = None
     WAITRESS_AVAILABLE = False
+# --- Bổ sung PYTHONPATH để chạy được cả khi thư mục làm việc thay đổi ---
+PROJECT_ROOT = Path(__file__).resolve().parent
+SRC_DIR = PROJECT_ROOT / "src"
+PARENT_DIR = PROJECT_ROOT.parent
+
+for extra_path in (PROJECT_ROOT, SRC_DIR, PARENT_DIR):
+    extra_str = str(extra_path)
+    if extra_str not in sys.path:
+        sys.path.insert(0, extra_str)
+
 
 # --- Import Modules ---
-from src.constants import USERNAME, PASSWORD, PIN_ENTRY, ACTIVE_LOW
+from src.constants import PASSWORD, PIN_ENTRY, ACTIVE_LOW
 from src.error_handler import ErrorHandler
 from src.gpio_handler import GPIOHandler, get_gpio_provider
 from src.system_state import SystemState
